@@ -12,7 +12,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install system dependencies
-      run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev pkg-config
+      run: |
+        sudo apt-get update && sudo apt-get install -y \
+          libasound2-dev \
+          libx11-dev \
+          libxi-dev \
+          libgl1-mesa-dev \
+          libglu1-mesa-dev \
+          libxcursor-dev \
+          libxi-dev \
+          libxinerama-dev \
+          libxrandr-dev \
+          libxss-dev \
+          libgtkd-3-dev \
+          pkg-config
     - name: Build
       run: cargo build --verbose
     - name: Run tests
