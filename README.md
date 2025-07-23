@@ -6,11 +6,7 @@ Aerogel brings intelligent assistance directly to your Wayland desktop through a
 
 ## ✨ Demo
 
-<video width="700" controls>
-  <source src="https://raw.githubusercontent.com/kamlendras/aerogel/refs/heads/main/demo/video.mp4" type="video/mp4">
-  <source src="demo/video.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+[Demo Video](https://raw.githubusercontent.com/kamlendras/aerogel/refs/heads/main/demo/video.mp4)
 
 ## 🚀 Quick Start
 
