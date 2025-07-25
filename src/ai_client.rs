@@ -74,6 +74,76 @@ impl AiClient {
         }
     }
 
+    pub async fn chat_ollama(
+        &self,
+        prompt_data: &PromptData,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+        let mut content_parts: Vec<Value> = Vec::new();
+
+        content_parts.push(json!({
+            "type": "text",
+            "text": prompt_data.text
+        }));
+
+        for media in &prompt_data.media {
+            if media.mime_type.starts_with("image/") {
+                let image_url = format!("data:{};base64,{}", media.mime_type, media.data);
+                content_parts.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": image_url }
+                }));
+            } else {
+                eprintln!(
+                    "\n[Warning (Ollama Chat)]: Skipping media with unsupported MIME type '{}'.",
+                    media.mime_type
+                );
+            }
+        }
+
+        let payload = json!({
+            "model": &self.config.ollama.model,
+            "messages": [{"role": "user", "content": content_parts}],
+            "max_tokens": self.config.ollama.max_tokens,
+            "temperature": self.config.ollama.temperature,
+            "top_p": self.config.ollama.top_p,
+            "stream": true
+        });
+
+        let response = self
+            .client
+            .post(&self.config.ollama.api_base)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await?;
+            return Err(anyhow!("Ollama API Error ({}): {}", status, error_body));
+        }
+
+        let stream = response.bytes_stream();
+        let s = stream! {
+            for await chunk_result in stream {
+                let chunk = chunk_result.map_err(|e| anyhow!("Stream error: {}", e))?;
+                let s = String::from_utf8_lossy(&chunk);
+                for line in s.split('\n') {
+                    if line.starts_with("data: ") {
+                        let data = &line[6..];
+                        if data == "[DONE]" { break; }
+                        if let Ok(json) = serde_json::from_str::<Value>(data) {
+                            if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                                yield Ok(content.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(s))
+    }
+
     async fn transcribe_audio_openai(&self, media: &Media) -> Result<String> {
         let api_key = self
             .config

@@ -16,6 +16,8 @@ pub struct ModelConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TomlConfig {
+    #[serde(rename = "Ollama")]
+    ollama: ModelConfig,
     #[serde(rename = "Gemini")]
     gemini: ModelConfig,
     #[serde(rename = "OpenAI")]
@@ -30,11 +32,13 @@ struct TomlConfig {
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
     // API keys, loaded from environment variables for security
+    // pub ollama_key: Option<String>,
     pub openai_key: Option<String>,
     pub claude_key: Option<String>,
     pub gemini_key: Option<String>,
     pub xai_key: Option<String>,
     // Model parameters, loaded from aerogel.toml
+    pub ollama: ModelConfig,
     pub openai: ModelConfig,
     pub claude: ModelConfig,
     pub gemini: ModelConfig,
@@ -63,8 +67,20 @@ impl ApiConfig {
 
         // XDG config directory
         if let Some(config_dir) = dirs::config_dir() {
-            paths.push(config_dir.join("aerogel").join("aerogel.toml").to_string_lossy().to_string());
-            paths.push(config_dir.join("aerogel").join("config.toml").to_string_lossy().to_string());
+            paths.push(
+                config_dir
+                    .join("aerogel")
+                    .join("aerogel.toml")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            paths.push(
+                config_dir
+                    .join("aerogel")
+                    .join("config.toml")
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
 
         // System-wide config (Unix-like systems)
@@ -90,7 +106,7 @@ impl ApiConfig {
     /// Returns the file content and the path where it was found.
     fn find_and_read_config() -> Result<(String, String)> {
         let paths = Self::get_config_paths();
-        
+
         for path in &paths {
             if Path::new(path).exists() {
                 match fs::read_to_string(path) {
@@ -99,7 +115,10 @@ impl ApiConfig {
                         return Ok((content, path.clone()));
                     }
                     Err(e) => {
-                        eprintln!("Warning: Found config file at {} but failed to read it: {}", path, e);
+                        eprintln!(
+                            "Warning: Found config file at {} but failed to read it: {}",
+                            path, e
+                        );
                         continue;
                     }
                 }
@@ -109,18 +128,17 @@ impl ApiConfig {
         // If no config file is found, provide a helpful error message
         Err(anyhow::anyhow!(
             "Could not find aerogel.toml configuration file in any of the following locations:\n{}",
-            paths.iter()
+            paths
+                .iter()
                 .map(|p| format!("  - {}", p))
                 .collect::<Vec<_>>()
                 .join("\n")
         ))
     }
 
-    // Renamed from `from_env` to `load` to reflect loading from both .env and .toml
     pub fn load() -> Result<Self> {
         // 1. Load API keys from .env file or system environment
         dotenv::dotenv().ok();
-
         let openai_key = env::var("OPENAI_API_KEY").ok();
         let claude_key = env::var("CLAUDE_API_KEY").ok();
         let gemini_key = env::var("GEMINI_API_KEY").ok();
@@ -139,6 +157,7 @@ impl ApiConfig {
             claude_key,
             gemini_key,
             xai_key,
+            ollama: toml_config.ollama,
             openai: toml_config.openai,
             claude: toml_config.claude,
             gemini: toml_config.gemini,

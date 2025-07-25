@@ -72,7 +72,12 @@ async fn process_prompt(
             }
         })
     };
-
+    let ollama_task = {
+        let client = Arc::clone(&client);
+        let prompt_data = prompt_data.clone();
+        let call = Box::pin(async move { client.chat_ollama(&prompt_data).await });
+        spawn_task("Ollama", call)
+    };
     let openai_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
