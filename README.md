@@ -20,7 +20,7 @@ Create your environment configuration with API keys for cloud-based AI services:
 
 ```bash
 # Create environment configuration
-touch .env && echo -e "GEMINI_API_KEY=\nOPENAI_API_KEY=\nCLAUDE_API_KEY=\nXAI_API_KEY=" > .env
+touch .env && echo -e "OPENROUTER_API_KEY=\nGEMINI_API_KEY=\nOPENAI_API_KEY=\nCLAUDE_API_KEY=\nXAI_API_KEY=" > .env
 ```
 Configure your preferred cloud AI service by adding the corresponding API key to your `.env` file.  
 

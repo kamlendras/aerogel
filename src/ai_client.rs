@@ -144,6 +144,165 @@ impl AiClient {
         Ok(Box::pin(s))
     }
 
+    pub async fn chat_openrouter(
+        &self,
+        prompt_data: &PromptData,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+        let api_key = self
+            .config
+            .get_key("openrouter")
+            .ok_or_else(|| anyhow!("OpenRouter API key not found"))?;
+
+        let mut content_parts: Vec<Value> = Vec::new();
+        let mut ocr_text = String::new();
+
+        // Process images with Gemini OCR first
+        for media in &prompt_data.media {
+            if media.mime_type.starts_with("image/") {
+                match self
+                    .extract_text_with_gemini(&media.data, &media.mime_type)
+                    .await
+                {
+                    Ok(extracted_text) => {
+                        if !extracted_text.trim().is_empty() {
+                            ocr_text.push_str(&format!("\n\n[OCR from image]: {}", extracted_text));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[Warning]: Failed to extract text from image with Gemini: {}",
+                            e
+                        );
+                        // Optionally, still include the image in the request as fallback
+                        let image_url = format!("data:{};base64,{}", media.mime_type, media.data);
+                        content_parts.push(json!({
+                            "type": "image_url",
+                            "image_url": { "url": image_url }
+                        }));
+                    }
+                }
+            } else {
+                eprintln!(
+                "\n[Warning (OpenRouter Chat)]: Skipping media with unsupported MIME type '{}'.",
+                media.mime_type
+            );
+            }
+        }
+
+        // Combine original text with OCR results
+        let combined_text = if ocr_text.is_empty() {
+            prompt_data.text.clone()
+        } else {
+            format!("{}{}", prompt_data.text, ocr_text)
+        };
+
+        content_parts.push(json!({
+            "type": "text",
+            "text": combined_text
+        }));
+
+        let payload = json!({
+            "model": &self.config.openrouter.model,
+            "messages": [{"role": "user", "content": content_parts}],
+            "max_tokens": self.config.openrouter.max_tokens,
+            "temperature": self.config.openrouter.temperature,
+            "top_p": self.config.openrouter.top_p,
+            "stream": true
+        });
+
+        let response = self
+            .client
+            .post(&self.config.openrouter.api_base)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await?;
+            return Err(anyhow!("OpenRouter API Error ({}): {}", status, error_body));
+        }
+
+        let stream = response.bytes_stream();
+        let s = stream! {
+            for await chunk_result in stream {
+                let chunk = chunk_result.map_err(|e| anyhow!("Stream error: {}", e))?;
+                let s = String::from_utf8_lossy(&chunk);
+                for line in s.split('\n') {
+                    if line.starts_with("data: ") {
+                        let data = &line[6..];
+                        if data == "[DONE]" { break; }
+                        if let Ok(json) = serde_json::from_str::<Value>(data) {
+                            if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                                yield Ok(content.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(s))
+    }
+
+    // Helper method to extract text using Gemini via OpenRouter
+    async fn extract_text_with_gemini(&self, image_data: &str, mime_type: &str) -> Result<String> {
+        let api_key = self
+            .config
+            .get_key("openrouter")
+            .ok_or_else(|| anyhow!("OpenRouter API key not found"))?;
+
+        let image_url = format!("data:{};base64,{}", mime_type, image_data);
+
+        let payload = json!({
+            "model": "google/gemini-flash-1.5",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Extract all text from this image. Return only the extracted text without any additional commentary or formatting."
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": { "url": image_url }
+                    }
+                ]
+            }],
+            "max_tokens": 6000,
+            "temperature": 0.1,
+            "stream": false
+        });
+
+        let response = self
+            .client
+            .post(&self.config.openrouter.api_base)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await?;
+            return Err(anyhow!(
+                "OpenRouter Gemini OCR Error ({}): {}",
+                status,
+                error_body
+            ));
+        }
+
+        let response_json: Value = response.json().await?;
+
+        if let Some(text) = response_json["choices"][0]["message"]["content"].as_str() {
+            Ok(text.to_string())
+        } else {
+            Err(anyhow!("No text extracted from image"))
+        }
+    }
+
     async fn transcribe_audio_openai(&self, media: &Media) -> Result<String> {
         let api_key = self
             .config

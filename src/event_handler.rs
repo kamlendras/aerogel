@@ -139,7 +139,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "h" => {
                         println!("\n>>> Trigger: Screenshot (Ctrl+H)");
 
-                       
                         // Check if the overlay is running and stop it temporarily
                         let overlay_was_running = is_overlay_running().await;
                         if overlay_was_running {
@@ -158,7 +157,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("    Restarting overlay...");
                             start_overlay().await;
                         }
-                       
 
                         if screenshot_result.is_ok() {
                             println!("    Screenshot saved to '{}'", path.display());
@@ -192,14 +190,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     "\\" => {
-                       
                         println!("\n>>> Trigger: Toggle Overlay (Ctrl+\\)");
                         if is_overlay_running().await {
                             stop_overlay().await;
                         } else {
                             start_overlay().await;
                         }
-                       
                     }
                     "g" => {
                         println!("\n>>> Trigger: Cleared Text Log (Ctrl+G)");
@@ -278,8 +274,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
-
 async fn start_overlay() {
     println!("    Starting ./overlay...");
     match Command::new("./overlay").spawn() {
@@ -292,10 +286,14 @@ async fn start_overlay() {
     }
 }
 
-
 async fn stop_overlay() {
     println!("    Stopping ./overlay...");
-    match Command::new("pkill").arg("-x").arg("overlay").status().await {
+    match Command::new("pkill")
+        .arg("-x")
+        .arg("overlay")
+        .status()
+        .await
+    {
         Ok(status) if status.success() => {
             println!("    Successfully stopped ./overlay.");
         }
@@ -311,9 +309,13 @@ async fn stop_overlay() {
     }
 }
 
-
 async fn is_overlay_running() -> bool {
-    match Command::new("pgrep").arg("-x").arg("overlay").output().await {
+    match Command::new("pgrep")
+        .arg("-x")
+        .arg("overlay")
+        .output()
+        .await
+    {
         Ok(output) => output.status.success(),
         Err(e) => {
             eprintln!(

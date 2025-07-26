@@ -196,67 +196,65 @@ impl AppState {
         new_state
     }
 
- 
+    fn load_margins_from_log() -> Option<(i32, i32)> {
+        let file = File::open("margin.log").ok()?;
+        let reader = BufReader::new(file);
 
-fn load_margins_from_log() -> Option<(i32, i32)> {
-    let file = File::open("margin.log").ok()?;
-    let reader = BufReader::new(file);
+        let mut last_margin_x = None;
+        let mut last_margin_y = None;
+        let mut last_line = String::new();
 
-    let mut last_margin_x = None;
-    let mut last_margin_y = None;
-    let mut last_line = String::new();
-
-    // Read all lines and extract the most recent margin values
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            // Parse lines in format: "Dragging: x=value, y=value"
-            if line.contains("Dragging:") {
-                // Find x= and y= values
-                if let Some(x_start) = line.find("x=") {
-                    if let Some(x_end) = line[x_start + 2..].find(',') {
-                        let x_str = &line[x_start + 2..x_start + 2 + x_end];
-                        if let Ok(x_val) = x_str.trim().parse::<i32>() {
-                            last_margin_x = Some(x_val);
+        // Read all lines and extract the most recent margin values
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                // Parse lines in format: "Dragging: x=value, y=value"
+                if line.contains("Dragging:") {
+                    // Find x= and y= values
+                    if let Some(x_start) = line.find("x=") {
+                        if let Some(x_end) = line[x_start + 2..].find(',') {
+                            let x_str = &line[x_start + 2..x_start + 2 + x_end];
+                            if let Ok(x_val) = x_str.trim().parse::<i32>() {
+                                last_margin_x = Some(x_val);
+                            }
                         }
                     }
-                }
 
-                if let Some(y_start) = line.find("y=") {
-                    let y_str = &line[y_start + 2..];
-                    // Remove any trailing whitespace or characters
-                    let y_clean = y_str
-                        .trim()
-                        .trim_end_matches(|c: char| !c.is_ascii_digit() && c != '-');
-                    if let Ok(y_val) = y_clean.parse::<i32>() {
-                        last_margin_y = Some(y_val);
+                    if let Some(y_start) = line.find("y=") {
+                        let y_str = &line[y_start + 2..];
+                        // Remove any trailing whitespace or characters
+                        let y_clean = y_str
+                            .trim()
+                            .trim_end_matches(|c: char| !c.is_ascii_digit() && c != '-');
+                        if let Ok(y_val) = y_clean.parse::<i32>() {
+                            last_margin_y = Some(y_val);
+                        }
                     }
+
+                    // Keep track of the last valid line
+                    last_line = line;
                 }
-                
-                // Keep track of the last valid line
-                last_line = line;
+            }
+        }
+
+        // Clear the log file and write back only the last line
+        if let Ok(mut file) = File::create("margin.log") {
+            if !last_line.is_empty() {
+                let _ = writeln!(file, "{}", last_line);
+            }
+        }
+
+        // Return the last found values, or None if not found
+        match (last_margin_x, last_margin_y) {
+            (Some(x), Some(y)) => {
+                println!("Loaded margins from log: x={}, y={}", x, y);
+                Some((x, y))
+            }
+            _ => {
+                println!("No valid margins found in log file, using defaults");
+                None
             }
         }
     }
-
-    // Clear the log file and write back only the last line
-    if let Ok(mut file) = File::create("margin.log") {
-        if !last_line.is_empty() {
-            let _ = writeln!(file, "{}", last_line);
-        }
-    }
-
-    // Return the last found values, or None if not found
-    match (last_margin_x, last_margin_y) {
-        (Some(x), Some(y)) => {
-            println!("Loaded margins from log: x={}, y={}", x, y);
-            Some((x, y))
-        }
-        _ => {
-            println!("No valid margins found in log file, using defaults");
-            None
-        }
-    }
-}
 
     fn load_text_from_log(filename: &str) -> Option<String> {
         match std::fs::read_to_string(filename) {
@@ -395,51 +393,46 @@ fn load_margins_from_log() -> Option<(i32, i32)> {
         self.drag_state.start_y = surface_y;
     }
 
-   fn update_drag(&mut self, surface_x: f64, surface_y: f64) {
-    if !self.drag_state.is_dragging {
-        return;
-    }
+    fn update_drag(&mut self, surface_x: f64, surface_y: f64) {
+        if !self.drag_state.is_dragging {
+            return;
+        }
 
-    // Calculate pointer movement since the last motion event.
-    let dx = surface_x - self.drag_state.start_x;
-    let dy = surface_y - self.drag_state.start_y;
+        // Calculate pointer movement since the last motion event.
+        let dx = surface_x - self.drag_state.start_x;
+        let dy = surface_y - self.drag_state.start_y;
 
-    // Apply the delta to our current margins.
-    let new_margin_x = self.margin_x + dx as i32;
-    let new_margin_y = self.margin_y + dy as i32;
+        // Apply the delta to our current margins.
+        let new_margin_x = self.margin_x + dx as i32;
+        let new_margin_y = self.margin_y + dy as i32;
 
-    // Clamp to screen boundaries.
-    let max_x = self.output_width.saturating_sub(self.width as i32).max(0);
-    let max_y = self.output_height.saturating_sub(self.height as i32).max(0);
-    self.margin_x = new_margin_x.max(0).min(max_x);
-    self.margin_y = new_margin_y.max(0).min(max_y);
+        // Clamp to screen boundaries.
+        let max_x = self.output_width.saturating_sub(self.width as i32).max(0);
+        let max_y = self.output_height.saturating_sub(self.height as i32).max(0);
+        self.margin_x = new_margin_x.max(0).min(max_x);
+        self.margin_y = new_margin_y.max(0).min(max_y);
 
-    // Update the reference point for the next motion event.
-    self.drag_state.start_x = surface_x;
-    self.drag_state.start_y = surface_y;
+        // Update the reference point for the next motion event.
+        self.drag_state.start_x = surface_x;
+        self.drag_state.start_y = surface_y;
 
-    // Log position 
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("margin.log")
-    {
-        writeln!(
-            file,
-            "Dragging: x={}, y={}",
-            self.margin_x, self.margin_y
-        )
-        .ok();
-    }
+        // Log position
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("margin.log")
+        {
+            writeln!(file, "Dragging: x={}, y={}", self.margin_x, self.margin_y).ok();
+        }
 
-    // Update the layer surface with the new position.
-    if let Some(layer_surface) = &self.layer_surface {
-        layer_surface.set_margin(self.margin_y, 0, 0, self.margin_x);
-        if let Some(surface) = &self.surface {
-            surface.commit();
+        // Update the layer surface with the new position.
+        if let Some(layer_surface) = &self.layer_surface {
+            layer_surface.set_margin(self.margin_y, 0, 0, self.margin_x);
+            if let Some(surface) = &self.surface {
+                surface.commit();
+            }
         }
     }
-}
 
     fn stop_drag(&mut self) {
         if self.drag_state.is_dragging {
