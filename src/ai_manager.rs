@@ -78,6 +78,12 @@ async fn process_prompt(
         let call = Box::pin(async move { client.chat_ollama(&prompt_data).await });
         spawn_task("Ollama", call)
     };
+    let openrouter_task = {
+        let client = Arc::clone(&client);
+        let prompt_data = prompt_data.clone();
+        let call = Box::pin(async move { client.chat_openrouter(&prompt_data).await });
+        spawn_task("OpenRouter", call)
+    };
     let openai_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
@@ -106,14 +112,20 @@ async fn process_prompt(
         spawn_task("XAI", call)
     };
 
-    let _ = tokio::join!(openai_task, claude_task, gemini_task, xai_task);
+    let _ = tokio::join!(
+        openrouter_task,
+        openai_task,
+        claude_task,
+        gemini_task,
+        xai_task
+    );
 
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // UPDATED LINE: Load config from both .env and aerogel.toml
+    // Load config from both .env and aerogel.toml
     let config = ApiConfig::load()?;
     let client = Arc::new(AiClient::new(config));
 

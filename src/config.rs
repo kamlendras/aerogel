@@ -18,6 +18,8 @@ pub struct ModelConfig {
 struct TomlConfig {
     #[serde(rename = "Ollama")]
     ollama: ModelConfig,
+    #[serde(rename = "OpenRouter")]
+    openrouter: ModelConfig,
     #[serde(rename = "Gemini")]
     gemini: ModelConfig,
     #[serde(rename = "OpenAI")]
@@ -32,13 +34,14 @@ struct TomlConfig {
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
     // API keys, loaded from environment variables for security
-    // pub ollama_key: Option<String>,
+    pub openrouter_key: Option<String>,
     pub openai_key: Option<String>,
     pub claude_key: Option<String>,
     pub gemini_key: Option<String>,
     pub xai_key: Option<String>,
     // Model parameters, loaded from aerogel.toml
     pub ollama: ModelConfig,
+    pub openrouter: ModelConfig,
     pub openai: ModelConfig,
     pub claude: ModelConfig,
     pub gemini: ModelConfig,
@@ -139,6 +142,7 @@ impl ApiConfig {
     pub fn load() -> Result<Self> {
         // 1. Load API keys from .env file or system environment
         dotenv::dotenv().ok();
+        let openrouter_key = env::var("OPENROUTER_API_KEY").ok();
         let openai_key = env::var("OPENAI_API_KEY").ok();
         let claude_key = env::var("CLAUDE_API_KEY").ok();
         let gemini_key = env::var("GEMINI_API_KEY").ok();
@@ -153,11 +157,13 @@ impl ApiConfig {
 
         // 3. Combine them into the final ApiConfig struct
         Ok(ApiConfig {
+            openrouter_key,
             openai_key,
             claude_key,
             gemini_key,
             xai_key,
             ollama: toml_config.ollama,
+            openrouter: toml_config.openrouter,
             openai: toml_config.openai,
             claude: toml_config.claude,
             gemini: toml_config.gemini,
@@ -167,6 +173,7 @@ impl ApiConfig {
 
     pub fn get_key(&self, provider: &str) -> Option<&String> {
         match provider.to_lowercase().as_str() {
+            "openrouter" => self.openrouter_key.as_ref(),
             "openai" => self.openai_key.as_ref(),
             "claude" | "anthropic" => self.claude_key.as_ref(),
             "gemini" | "google" => self.gemini_key.as_ref(),

@@ -1,17 +1,17 @@
 use colored::*;
 use std::fs::File;
 use std::io::{self, Write};
-use std::process::{exit, Command, Stdio}; 
+use std::process::{exit, Command, Stdio};
 
 fn main() {
     println!("Starting the event listener which requires root privileges.");
-    io::stdout().flush().expect("Failed to flush stdout."); 
+    io::stdout().flush().expect("Failed to flush stdout.");
 
     let listener_status = Command::new("sudo")
-        .arg("-b") 
+        .arg("-b")
         .arg("./event_listener")
-        .stdout(Stdio::null()) 
-        .stderr(Stdio::null()) 
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .expect("Failed to execute command. Is 'sudo' installed and in your PATH?");
 
@@ -25,13 +25,7 @@ fn main() {
         exit(1);
     }
 
-    println!(
-        "\n{}",
-        "'./event_listener' launched successfully.".green()
-    );
-
-    
-
+    println!("\n{}", "'./event_listener' launched successfully.".green());
 
     let handler_log_file = File::create("aerogel.log").expect("Failed to create aerogel.log");
 
@@ -45,10 +39,7 @@ fn main() {
         .spawn()
     {
         Ok(_) => {
-            println!(
-                "{}",
-                "'./event_handler' launched successfully.".green()
-            );
+            println!("{}", "'./event_handler' launched successfully.".green());
         }
         Err(e) => {
             eprintln!(
@@ -59,5 +50,4 @@ fn main() {
             exit(1);
         }
     }
-
 }
