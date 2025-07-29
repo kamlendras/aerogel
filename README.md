@@ -12,8 +12,6 @@ https://github.com/user-attachments/assets/0d890ee1-3782-4278-9160-51f6989b6aa9
 
 ### 1. AI Model Configuration
 
-
-
 **Option A: Cloud-based AI Services** ☁️
 
 Create your environment configuration with API keys for cloud-based AI services:
@@ -44,6 +42,7 @@ docker exec -d ollama ollama run gemma3:4b
 Then update your model configuration in `aerogel.toml`:
 - Set your model name (e.g., `gemma3`, `llama4`)
 - Adjust `max_tokens`, `temperature`, and `top_p` as needed
+
 ### 2. Build & Run
 
 ```bash
@@ -59,30 +58,57 @@ cd target/release
 
 ## ⚙️ Configuration
 
-Customize your AI experience by editing `aerogel.toml`:
+Customize your Aerogel experience by editing `aerogel.toml`. The configuration file is searched for in the following locations (in order):
 
+1. `$XDG_CONFIG_HOME/aerogel/aerogel.toml`
+2. `$XDG_CONFIG_HOME/aerogel.toml`
+3. `$HOME/.config/aerogel/aerogel.toml`
+4. `$HOME/.aerogel.toml`
+5. `/etc/aerogel/aerogel.toml`
+
+### Application Settings
+- **Width**: Interface width in pixels (default: 870)
+- **Max Height**: Maximum interface height in pixels (default: 810)
+- **Scroll Speed**: Controls scrolling sensitivity (default: 0.4)
+- **Border Radius**: Interface corner rounding in pixels (default: 8.0)
+
+### Font Configuration
+- **Path**: Font file location (default: JetBrains Mono)
+- **Size**: Font size in points (default: 20.0)
+
+### Color Scheme
+- **RGB Values**: Customize interface colors (red, green, blue)
+- **Alpha Multiplier**: Controls transparency (default: 230.0)
+
+### AI Model Settings
 - **Model Name**: Choose your preferred AI model (local or cloud)
 - **Max Tokens**: Control response length
 - **Temperature**: Adjust creativity level (0.0-1.0)
 - **Top P**: Fine-tune response diversity (0.0-1.0)
 
-## ⌨️ Keyboard Shortcuts
+### Custom Keybindings
+All keyboard shortcuts are configurable in the `[keybindings]` section:
 
-| Action | Shortcut | Description |
-|--------|----------|-------------|
-| **Toggle Interface** | `Ctrl + \` | Show or hide the overlay |
-| **Text Input** | `Ctrl + I` | Open text input for queries |
-| **Screenshot** | `Ctrl + H` | Capture current screen |
-| **Audio Recording** | `Ctrl + M` | Record voice input |
-| **Process Query** | `Ctrl + Enter` | Send query to AI |
-| **Clear Session** | `Ctrl + G` | Reset current conversation |
+| Action | Default Shortcut | Config Key | Description |
+|--------|------------------|------------|-------------|
+| **Toggle Interface** | `Ctrl + \` | `show_hide` | Show or hide the overlay |
+| **Text Input** | `Ctrl + I` | `type_text` | Open text input for queries |
+| **Screenshot** | `Ctrl + H` | `take_screenshot` | Capture current screen |
+| **Audio Recording** | `Ctrl + M` | `record_audio` | Record voice input |
+| **Process Query** | `Ctrl + Enter` | `solve` | Send query to AI |
+| **Clear Session** | `Ctrl + G` | `clear` | Reset current conversation |
+
+## 🐛 Troubleshooting
+
+### Logs
+Aerogel writes detailed logs to `aerogel.log` in the current working directory. Check this file for debugging information and error messages.
 
 ## 🛠️ Requirements
 
 - Wayland compositor
 - Rust toolchain
 - grim (for screenshots)
-- Audio recording capabilities (for voice input)
+- alsa-lib-devel/libasound2-dev (for audio functionality)
 - Ollama (optional, for local AI model setup)
 
 ---

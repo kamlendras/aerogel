@@ -23,54 +23,34 @@ path = "src/event_listener.rs"
 name = "event_handler"
 path = "src/event_handler.rs"
 
-[target.'cfg(windows)'.lib]
-crate-type = ["cdylib"]
-
 [dependencies]
-toml = "0.8"
-
+once_cell = "1.21.3"
 pulldown-cmark = "0.9"
-colored = "2.1.0"
-wayland-client = "0.31"
-wayland-protocols-wlr = { version = "0.2", features = ["client"] }
-memmap2 = "0.9"
-tempfile = "3.8"
-fastrand = "2.3.0"
 rusttype = "0.9.3"
-calloop = "0.10"
-calloop-wayland-source = "0.2"
-tokio = { version = "1.0", features = ["full"] }
-reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-dotenv = "0.15"
-anyhow = "1.0"
-base64 = "0.22.1"
-image = "0.25.6"
-chrono = { version = "0.4", features = ["serde"] }
-futures-util = "0.3"
-notify = "6.1.1"
-futures = "0.3"
-cpal = "0.16.0"
-dirs = "5.0"
-hound = "3.5.1"
-screenshots = "0.8.10"
-ctrlc = "3.4.4"
-regex = "1.10"
-byteorder = "1.4.3"
 syntect = "5.2.0"
+toml = "0.8"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.2", features = ["client"] }
+colored = "2.1.0"
 clap = { version = "4.5.10", features = ["derive"] }
-tokio-stream = "0.1.11"
+chrono = { version = "0.4", features = ["serde"] }
+config = "0.15.13"
+notify = "6.1.1"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+futures-util = "0.3"
 async-stream = "0.3"
-wayland-backend = "0.3.10"
+base64 = "0.22.1"
 mime_guess = "2.0.4" 
+reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
+tokio-stream = "0.1.11"
+byteorder = "1.4.3"
 rdev = "0.5.1"
 nix = "0.30.1"
-[build-dependencies]
-cc = "1.0"
+dirs = "5.0"
+dotenv = "0.15"
+tempfile = "3.8"
+memmap2 = "0.9"
 
-[target.'cfg(any(windows, macos))'.dependencies]
-rdev = "0.5.1"
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.9", features = ["consoleapi", "minwindef", "winuser"] }

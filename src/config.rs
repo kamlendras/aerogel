@@ -14,7 +14,6 @@ pub struct ModelConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TomlConfig {
     #[serde(rename = "Ollama")]
     ollama: ModelConfig,
@@ -49,12 +48,6 @@ pub struct ApiConfig {
 }
 
 impl ApiConfig {
-    /// Returns a list of paths to search for the aerogel.toml configuration file.
-    /// The paths are checked in order of preference:
-    /// 1. Current working directory
-    /// 2. User's home directory
-    /// 3. XDG config directory (~/.config/aerogel/ on Linux)
-    /// 4. System config directory (/etc/aerogel/ on Unix systems)
     fn get_config_paths() -> Vec<String> {
         let mut paths = vec![
             // Current directory (highest priority)
@@ -62,51 +55,25 @@ impl ApiConfig {
             "../../aerogel.toml".to_string(),
         ];
 
-        // Home directory
-        if let Some(home_dir) = dirs::home_dir() {
-            paths.push(home_dir.join("aerogel.toml").to_string_lossy().to_string());
-            paths.push(home_dir.join(".aerogel.toml").to_string_lossy().to_string());
+        // XDG Base Directory Specification paths
+        if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+            paths.push(format!("{}/aerogel/aerogel.toml", xdg_config_home));
+            paths.push(format!("{}/aerogel.toml", xdg_config_home));
         }
 
-        // XDG config directory
-        if let Some(config_dir) = dirs::config_dir() {
-            paths.push(
-                config_dir
-                    .join("aerogel")
-                    .join("aerogel.toml")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-            paths.push(
-                config_dir
-                    .join("aerogel")
-                    .join("config.toml")
-                    .to_string_lossy()
-                    .to_string(),
-            );
+        // Home directory paths
+        if let Ok(home) = env::var("HOME") {
+            paths.push(format!("{}/.config/aerogel/aerogel.toml", home));
+            paths.push(format!("{}/.aerogel.toml", home));
         }
 
-        // System-wide config (Unix-like systems)
-        #[cfg(unix)]
-        {
-            paths.push("/etc/aerogel/aerogel.toml".to_string());
-            paths.push("/etc/aerogel/config.toml".to_string());
-        }
-
-        // Windows system config
-        #[cfg(windows)]
-        {
-            if let Some(program_data) = env::var("PROGRAMDATA").ok() {
-                paths.push(format!("{}\\aerogel\\aerogel.toml", program_data));
-                paths.push(format!("{}\\aerogel\\config.toml", program_data));
-            }
-        }
+        // System-wide configuration
+        paths.push("/etc/aerogel/aerogel.toml".to_string());
 
         paths
     }
 
-    /// Attempts to find and read the aerogel.toml configuration file from multiple locations.
-    /// Returns the file content and the path where it was found.
+    // Attempts to find and read the aerogel.toml configuration file from multiple locations.
     fn find_and_read_config() -> Result<(String, String)> {
         let paths = Self::get_config_paths();
 

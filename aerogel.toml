@@ -1,3 +1,33 @@
+# Application Settings
+[app]
+width = 870
+max_height = 810
+scroll_speed = 0.4
+border_radius = 8.0
+
+# Font Configuration
+[font]
+path = "../../fonts/JetBrainsMono-Regular.ttf"
+size = 20.0
+
+# Color Scheme
+[colors]
+blue = 20
+green = 20
+red = 20
+alpha_multiplier = 230.0
+
+# Keybindings
+[keybindings]
+show_hide = "Ctrl+\\"
+type_text = "Ctrl+I"
+take_screenshot = "Ctrl+H"
+record_audio = "Ctrl+M"
+solve = "Ctrl+Enter"
+clear = "Ctrl+G"
+
+# Providers
+
 [Ollama]
 api_base="http://localhost:11434/v1/chat/completions"
 model="gemma3:4b"

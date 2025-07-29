@@ -23,7 +23,7 @@ async fn process_prompt(
         let mut file = log_file.lock().await;
         let timestamp = chrono::Local::now();
         if !prompt_data.media.is_empty() {
-            writeln!(file, "Media Files Attached: {}  ", prompt_data.media.len())?;
+            writeln!(file, "\nMedia Files Attached: {}  ", prompt_data.media.len())?;
         }
     }
 
@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
     let client = Arc::new(AiClient::new(config));
 
     let log_file = Arc::new(Mutex::new(
-        OpenOptions::new().create(true).append(true).open(".temp")?,
+        OpenOptions::new().create(true).append(true).open(".tmp")?,
     ));
 
     println!("--- AI Client ---");

@@ -1,11 +1,14 @@
+use once_cell::sync::Lazy;
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
 use rusttype::{point, Font, Scale};
+use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::time::{Duration, Instant};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
+use toml;
 use wayland_client::{
     protocol::{
         wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard::WlKeyboard,
@@ -18,6 +21,83 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
 };
+
+#[derive(Deserialize)]
+struct AppConfig {
+    width: u32,
+    max_height: u32,
+    scroll_speed: f32,
+    border_radius: f32,
+}
+
+#[derive(Deserialize)]
+struct FontConfig {
+    path: String,
+    size: f32,
+}
+
+#[derive(Deserialize)]
+struct ColorsConfig {
+    blue: u8,
+    green: u8,
+    red: u8,
+    alpha_multiplier: f32,
+}
+
+#[derive(Deserialize)]
+struct KeybindingsConfig {
+    show_hide: String,
+    type_text: String,
+    take_screenshot: String,
+    record_audio: String,
+    solve: String,
+    clear: String,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    app: AppConfig,
+    font: FontConfig,
+    colors: ColorsConfig,
+    keybindings: KeybindingsConfig,
+}
+
+static CONFIG: Lazy<Config> = Lazy::new(|| {
+    use std::env;
+    use std::path::PathBuf;
+
+    let mut config_paths = Vec::new();
+
+    // Add paths from environment variables in order of priority
+    if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+        if !xdg_config_home.is_empty() {
+            let base = PathBuf::from(xdg_config_home);
+            config_paths.push(base.join("aerogel/aerogel.toml"));
+            config_paths.push(base.join("aerogel.toml"));
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        if !home.is_empty() {
+            let base = PathBuf::from(home);
+            config_paths.push(base.join(".config/aerogel/aerogel.toml"));
+            config_paths.push(base.join(".aerogel.toml"));
+        }
+    }
+
+    // Add system-wide and relative fallback paths
+    config_paths.extend([
+        PathBuf::from("/etc/aerogel/aerogel.toml"),
+        PathBuf::from("../../aerogel.toml"),
+        PathBuf::from("aerogel.toml"),
+    ]);
+
+    let config_str = config_paths
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .expect("Failed to read aerogel.toml from any of the expected locations");
+
+    toml::from_str(&config_str).expect("Failed to parse aerogel.toml")
+});
 
 #[derive(Debug, Clone)]
 struct DragState {
@@ -41,16 +121,23 @@ impl Default for DragState {
 }
 
 fn get_default_text() -> String {
-    "# Keybindings
+    format!(
+        r#"# Keybindings
 ```
-Show / Hide      Ctrl+\\
-Type Text        Ctrl+I
-Take Screenshot  Ctrl+H
-Record Audio     Ctrl+M
-Solve            Ctrl+Enter
-Clear            Ctrl+G
-```"
-    .to_string()
+Show / Hide      {}
+Type Text        {}
+Take Screenshot  {}
+Record Audio     {}
+Solve            {}
+Clear            {}
+```"#,
+        &CONFIG.keybindings.show_hide,
+        &CONFIG.keybindings.type_text,
+        &CONFIG.keybindings.take_screenshot,
+        &CONFIG.keybindings.record_audio,
+        &CONFIG.keybindings.solve,
+        &CONFIG.keybindings.clear,
+    )
 }
 
 struct AppState {
@@ -117,37 +204,40 @@ impl AppState {
         // Load margins from log file
         let (loaded_margin_x, loaded_margin_y) = Self::load_margins_from_log().unwrap_or((20, 20));
 
-        // Load font - using DejaVu Sans as a fallback
-        let font_data = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
-        let font = Font::try_from_bytes(font_data as &[u8]).unwrap_or_else(|| {
-            let system_font_data =
-                std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-                    .or_else(|_| std::fs::read("/System/Library/Fonts/Arial.ttf"))
-                    .or_else(|_| std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf"))
-                    .unwrap_or_else(|_| {
-                        // If no system font is found, create a minimal fallback
-                        eprintln!("Warning: No system font found. Text rendering might fail.");
-                        Vec::new() // Should ideally panick or provide a fallback font
-                    });
+        // Load font from config path, with fallbacks
+        let font = {
+            // Try to load from the path specified in the config file first.
+            let config_font_result = std::fs::read(&CONFIG.font.path)
+                .ok()
+                .and_then(|data| Font::try_from_vec(data));
 
-            if system_font_data.is_empty() {
-                panic!("No font available. Please ensure JetBrainsMono-Regular.ttf is in fonts/ or a system font is available.");
-            }
+            config_font_result.unwrap_or_else(|| {
+                // If the above fails, print a warning and try system fallbacks.
+                eprintln!(
+                    "Warning: Could not load font from config path: '{}'. Trying system fonts.",
+                    &CONFIG.font.path
+                );
+                let system_font_data =
+                    std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+                        .or_else(|_| std::fs::read("/System/Library/Fonts/Arial.ttf"))
+                        .or_else(|_| std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf"))
+                        .expect("No system fallback font found. Please check font paths.");
 
-            Font::try_from_vec(system_font_data).expect("Failed to load font")
-        });
+                Font::try_from_vec(system_font_data).expect("Failed to parse system fallback font.")
+            })
+        };
 
         // Load initial text from log file
-        let initial_text = Self::load_text_from_log(".temp").unwrap_or_else(get_default_text);
+        let initial_text = Self::load_text_from_log(".tmp").unwrap_or_else(get_default_text);
 
         // Initialize syntect
         let ss = SyntaxSet::load_defaults_newlines();
         let ts = ThemeSet::load_defaults();
         let theme = ts.themes["base16-ocean.dark"].clone();
 
-        let width = 870;
+        let width = CONFIG.app.width;
         let calculated_height = calculate_text_height(&font, &initial_text, &ss, &theme, width);
-        let height = calculated_height.min(810);
+        let height = calculated_height.min(CONFIG.app.max_height);
 
         let mut new_state = Self {
             compositor: None,
@@ -164,7 +254,7 @@ impl AppState {
             margin_x: loaded_margin_x,
             margin_y: loaded_margin_y,
             visible: true,
-            border_radius: 8.0,
+            border_radius: CONFIG.app.border_radius,
             drag_state: DragState::default(),
             pointer_x: 0.0,
             pointer_y: 0.0,
@@ -174,7 +264,7 @@ impl AppState {
             text: initial_text,
             last_text_update: Instant::now(),
             text_update_interval: Duration::from_millis(10),
-            temp_file: ".temp".to_string(),
+            temp_file: ".tmp".to_string(),
             text_changed: false,
             scroll_offset_y: 0.0,
             max_scroll_offset_y: 0.0,
@@ -290,7 +380,7 @@ impl AppState {
                     &self.theme,
                     self.width,
                 );
-                self.height = calculated_height.min(810);
+                self.height = calculated_height.min(CONFIG.app.max_height);
 
                 // Calculate max_scroll_offset_y
                 let total_text_height = calculate_text_height(
@@ -589,7 +679,7 @@ impl Dispatch<WlPointer, ()> for AppState {
             Event::Axis { axis, value, .. } => {
                 match axis {
                     WEnum::Value(Axis::VerticalScroll) => {
-                        let scroll_amount = value as f32 / 0.4; // Adjust scroll speed
+                        let scroll_amount = value as f32 / CONFIG.app.scroll_speed; // Adjust scroll speed
                         state.scroll_offset_y = (state.scroll_offset_y + scroll_amount)
                             .max(0.0)
                             .min(state.max_scroll_offset_y);
@@ -699,7 +789,7 @@ impl Dispatch<WlOutput, ()> for AppState {
     }
 }
 
-// --- START: MARKDOWN RENDERING LOGIC ---
+// --- MARKDOWN RENDERING LOGIC ---
 
 // Represents a block of content parsed from Markdown.
 // We only distinguish between Code and general Text for now.
@@ -867,10 +957,10 @@ fn draw_content_to_buffer(
                 );
 
                 if alpha > 0.0 {
-                    let final_alpha = (alpha * 230.0) as u8;
-                    data[pixel_idx] = 20; // Blue
-                    data[pixel_idx + 1] = 20; // Green
-                    data[pixel_idx + 2] = 20; // Red
+                    let final_alpha = (alpha * CONFIG.colors.alpha_multiplier) as u8;
+                    data[pixel_idx] = CONFIG.colors.blue; // Blue
+                    data[pixel_idx + 1] = CONFIG.colors.green; // Green
+                    data[pixel_idx + 2] = CONFIG.colors.red; // Red
                     data[pixel_idx + 3] = final_alpha;
                 }
             }
@@ -980,7 +1070,7 @@ fn _render_block(
     lang: &str,
     is_code_block: bool,
 ) -> f32 {
-    let scale = Scale::uniform(20.0);
+    let scale = Scale::uniform(CONFIG.font.size);
     let v_metrics = font.v_metrics(scale);
     let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
     let mut y_offset = y_cursor + v_metrics.ascent;
@@ -1269,7 +1359,7 @@ fn _calculate_block_height(
     lang: &str,
     is_code_block: bool,
 ) -> f32 {
-    let scale = Scale::uniform(20.0);
+    let scale = Scale::uniform(CONFIG.font.size);
     let v_metrics = font.v_metrics(scale);
     let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
     let mut y_offset = v_metrics.ascent;
