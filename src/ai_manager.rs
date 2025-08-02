@@ -3,9 +3,11 @@ mod config;
 
 use crate::ai_client::{AiClient, PromptData};
 use crate::config::ApiConfig;
-use anyhow::Result;
-use futures_util::stream::Stream;
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
+use futures_util::stream::Stream;
+use serde_json::Value;
+use std::env;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{self, Write};
@@ -16,109 +18,152 @@ use tokio::sync::Mutex;
 
 async fn process_prompt(
     client: Arc<AiClient>,
-    log_file: Arc<Mutex<std::fs::File>>,
+    log_file: Option<Arc<Mutex<std::fs::File>>>,
     prompt_data: PromptData,
 ) -> Result<()> {
-    {
-        let mut file = log_file.lock().await;
-        let timestamp = chrono::Local::now();
+    if let Some(log_file_arc) = &log_file {
+        let mut file = log_file_arc.lock().await;
         if !prompt_data.media.is_empty() {
-            writeln!(file, "\nMedia Files Attached: {}  ", prompt_data.media.len())?;
+            writeln!(
+                file,
+                "\nMedia Files Attached: {}  ",
+                prompt_data.media.len()
+            )?;
         }
     }
 
-    let spawn_task = |model_name: &'static str,
-                      call: Pin<
-        Box<dyn Future<Output = Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>>> + Send>,
+    let spawn_and_process = |model_name: &'static str,
+                             call: Pin<
+        Box<
+            dyn Future<Output = Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)>>
+                + Send,
+        >,
     >| {
-        let log_file_clone = Arc::clone(&log_file);
+        let log_file_clone = log_file.clone();
         tokio::spawn(async move {
-            print!("{}: ", model_name);
-            io::stdout().flush().unwrap();
-
             match call.await {
-                Ok(mut stream) => {
+                Ok((mut stream, user_content)) => {
+                    print!("{}: ", model_name);
+                    io::stdout().flush().unwrap();
+                    let mut full_response = String::new();
+
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Ok(content) => {
                                 print!("{}", content);
                                 io::stdout().flush().unwrap();
+                                full_response.push_str(&content);
 
-                                let mut file = log_file_clone.lock().await;
-                                write!(file, "{}", &content).unwrap();
+                                if let Some(file_arc) = &log_file_clone {
+                                    let mut file = file_arc.lock().await;
+                                    write!(file, "{}", &content).unwrap();
+                                }
                             }
                             Err(e) => {
                                 let err_msg =
                                     format!("\nError streaming {} response: {}", model_name, e);
                                 eprint!("{}", err_msg);
-                                // Also log the error to the file
-                                let mut file = log_file_clone.lock().await;
-                                writeln!(file, "{}", err_msg).unwrap();
-                                break;
+                                return Err(anyhow!(err_msg));
                             }
                         }
                     }
-
                     println!();
-
-                    let mut file = log_file_clone.lock().await;
-                    writeln!(file).unwrap();
+                    if let Some(file_arc) = &log_file_clone {
+                        let mut file = file_arc.lock().await;
+                        writeln!(file).unwrap();
+                    }
+                    Ok((user_content, full_response))
                 }
                 Err(e) => {
                     let err_msg = format!("Error calling {}: {}", model_name, e);
                     eprintln!("{}", err_msg);
-                    let mut file = log_file_clone.lock().await;
+                    Err(anyhow!(err_msg))
                 }
             }
         })
     };
+
     let ollama_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
         let call = Box::pin(async move { client.chat_ollama(&prompt_data).await });
-        spawn_task("Ollama", call)
+        spawn_and_process("Ollama", call)
     };
+
     let openrouter_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
         let call = Box::pin(async move { client.chat_openrouter(&prompt_data).await });
-        spawn_task("OpenRouter", call)
+        spawn_and_process("OpenRouter", call)
     };
+
     let openai_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
         let call = Box::pin(async move { client.chat_openai(&prompt_data).await });
-        spawn_task("OpenAI", call)
+        spawn_and_process("OpenAI", call)
     };
 
     let claude_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
         let call = Box::pin(async move { client.chat_claude(&prompt_data).await });
-        spawn_task("Claude", call)
+        spawn_and_process("Claude", call)
     };
 
     let gemini_task = {
         let client = Arc::clone(&client);
         let prompt_data = prompt_data.clone();
         let call = Box::pin(async move { client.chat_gemini(&prompt_data).await });
-        spawn_task("Gemini", call)
+        spawn_and_process("Gemini", call)
     };
 
     let xai_task = {
         let client = Arc::clone(&client);
-
+        let prompt_data = prompt_data.clone();
         let call = Box::pin(async move { client.chat_xai(&prompt_data).await });
-        spawn_task("XAI", call)
+        spawn_and_process("XAI", call)
     };
 
-    let _ = tokio::join!(
+    let (ollama_res, openrouter_res, openai_res, claude_res, gemini_res, xai_res) = tokio::join!(
+        ollama_task,
         openrouter_task,
         openai_task,
         claude_task,
         gemini_task,
         xai_task
     );
+
+    if let Ok(Ok((user_content, response))) = ollama_res {
+        client
+            .add_history_entry("Ollama", user_content, response)
+            .await;
+    }
+    if let Ok(Ok((user_content, response))) = openrouter_res {
+        client
+            .add_history_entry("OpenRouter", user_content, response)
+            .await;
+    }
+    if let Ok(Ok((user_content, response))) = openai_res {
+        client
+            .add_history_entry("OpenAI", user_content, response)
+            .await;
+    }
+    if let Ok(Ok((user_content, response))) = claude_res {
+        client
+            .add_history_entry("Claude", user_content, response)
+            .await;
+    }
+    if let Ok(Ok((user_content, response))) = gemini_res {
+        client
+            .add_history_entry("Gemini", user_content, response)
+            .await;
+    }
+    if let Ok(Ok((user_content, response))) = xai_res {
+        client
+            .add_history_entry("XAI", user_content, response)
+            .await;
+    }
 
     Ok(())
 }
@@ -129,12 +174,17 @@ async fn main() -> Result<()> {
     let config = ApiConfig::load()?;
     let client = Arc::new(AiClient::new(config));
 
-    let log_file = Arc::new(Mutex::new(
-        OpenOptions::new().create(true).append(true).open(".tmp")?,
-    ));
+    let log_file: Option<Arc<Mutex<std::fs::File>>> = if let Some(path) = env::args().nth(1) {
+        println!("[INFO] Logging conversation to '{}'", path);
+        Some(Arc::new(Mutex::new(
+            OpenOptions::new().create(true).append(true).open(path)?,
+        )))
+    } else {
+        None
+    };
 
     println!("--- AI Client ---");
-    println!("Commands: /upload <file_path>, /ask, /quit");
+    println!("Commands: /upload <file_path>, /ask, /new, /quit");
     println!("You can upload text, image, and audio files.");
     println!("Type your prompt (multi-line is okay), then use /ask to send.");
 
@@ -171,6 +221,14 @@ async fn main() -> Result<()> {
             break;
         }
 
+        if input_trimmed.eq_ignore_ascii_case("/new") {
+            client.clear_history().await;
+            attached_files.clear();
+            multi_line_prompt.clear();
+            println!("New conversation started. History cleared.");
+            continue;
+        }
+
         if input_trimmed.eq_ignore_ascii_case("/ask") {
             if multi_line_prompt.is_empty() && attached_files.is_empty() {
                 println!("Cannot send an empty prompt. Type something or upload a file.");
@@ -186,8 +244,7 @@ async fn main() -> Result<()> {
             match PromptData::new(prompt_text, &attached_files).await {
                 Ok(prompt_data) => {
                     if let Err(e) =
-                        process_prompt(Arc::clone(&client), Arc::clone(&log_file), prompt_data)
-                            .await
+                        process_prompt(Arc::clone(&client), log_file.clone(), prompt_data).await
                     {
                         eprintln!(
                             "[ERROR] An error occurred while processing the prompt: {}",

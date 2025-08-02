@@ -1,7 +1,7 @@
 use colored::*;
 use std::fs::File;
 use std::io::{self, Write};
-use std::process::{exit, Command, Stdio};
+use std::process::{Command, Stdio, exit};
 
 fn main() {
     println!("Starting the event listener which requires root privileges.");

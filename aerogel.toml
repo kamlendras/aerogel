@@ -4,6 +4,7 @@ width = 870
 max_height = 810
 scroll_speed = 0.4
 border_radius = 8.0
+auto_scroll = false
 
 # Font Configuration
 [font]
@@ -19,12 +20,13 @@ alpha_multiplier = 230.0
 
 # Keybindings
 [keybindings]
-show_hide = "Ctrl+\\"
+show_hide = "Ctrl+X"
 type_text = "Ctrl+I"
-take_screenshot = "Ctrl+H"
+take_screenshot = "Ctrl+Q"
 record_audio = "Ctrl+M"
 solve = "Ctrl+Enter"
 clear = "Ctrl+G"
+switch_to_workspace = "Alt"
 
 # Providers
 

@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
-use rusttype::{point, Font, Scale};
+use rusttype::{Font, Scale, point};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -10,12 +10,12 @@ use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use toml;
 use wayland_client::{
+    Connection, Dispatch, QueueHandle, WEnum,
     protocol::{
         wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard::WlKeyboard,
         wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat, wl_shm::WlShm,
         wl_surface::WlSurface,
     },
-    Connection, Dispatch, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1},
@@ -28,6 +28,7 @@ struct AppConfig {
     max_height: u32,
     scroll_speed: f32,
     border_radius: f32,
+    auto_scroll: bool,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +53,7 @@ struct KeybindingsConfig {
     record_audio: String,
     solve: String,
     clear: String,
+    switch_to_workspace: String,
 }
 
 #[derive(Deserialize)]
@@ -104,8 +106,8 @@ struct DragState {
     is_dragging: bool,
     start_x: f64,
     start_y: f64,
-    start_margin_x: i32,
-    start_margin_y: i32,
+    _start_margin_x: i32,
+    _start_margin_y: i32,
 }
 
 impl Default for DragState {
@@ -114,8 +116,8 @@ impl Default for DragState {
             is_dragging: false,
             start_x: 0.0,
             start_y: 0.0,
-            start_margin_x: 20,
-            start_margin_y: 20,
+            _start_margin_x: 20,
+            _start_margin_y: 20,
         }
     }
 }
@@ -124,12 +126,13 @@ fn get_default_text() -> String {
     format!(
         r#"# Keybindings
 ```
-Show / Hide      {}
-Type Text        {}
-Take Screenshot  {}
-Record Audio     {}
-Solve            {}
-Clear            {}
+Show / Hide          {}
+Type Text            {}
+Take Screenshot      {}
+Record Audio         {}
+Solve                {}
+Clear                {}
+Switch Workspace     {}+n
 ```"#,
         &CONFIG.keybindings.show_hide,
         &CONFIG.keybindings.type_text,
@@ -137,6 +140,7 @@ Clear            {}
         &CONFIG.keybindings.record_audio,
         &CONFIG.keybindings.solve,
         &CONFIG.keybindings.clear,
+        &CONFIG.keybindings.switch_to_workspace,
     )
 }
 
@@ -185,7 +189,7 @@ struct AppState {
     // Text update tracking
     last_text_update: Instant,
     text_update_interval: Duration,
-    temp_file: String,
+    current_workspace: u32,
 
     // Track if text has changed (for redrawing)
     text_changed: bool,
@@ -227,8 +231,12 @@ impl AppState {
             })
         };
 
-        // Load initial text from log file
-        let initial_text = Self::load_text_from_log(".tmp").unwrap_or_else(get_default_text);
+        // Load initial workspace
+        let initial_workspace = Self::read_current_workspace().unwrap_or(1);
+        let temp_file = format!(".tmp{}", initial_workspace);
+
+        // Load initial text from log file for the correct workspace
+        let initial_text = Self::load_text_from_log(&temp_file).unwrap_or_else(get_default_text);
 
         // Initialize syntect
         let ss = SyntaxSet::load_defaults_newlines();
@@ -264,7 +272,7 @@ impl AppState {
             text: initial_text,
             last_text_update: Instant::now(),
             text_update_interval: Duration::from_millis(10),
-            temp_file: ".tmp".to_string(),
+            current_workspace: initial_workspace,
             text_changed: false,
             scroll_offset_y: 0.0,
             max_scroll_offset_y: 0.0,
@@ -284,6 +292,24 @@ impl AppState {
             (total_text_height as f32 - new_state.height as f32).max(0.0);
 
         new_state
+    }
+
+    fn read_current_workspace() -> Option<u32> {
+        std::fs::read_to_string(".aerogel_workspace")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+    }
+
+    fn check_for_workspace_switch(&mut self, qh: &QueueHandle<Self>) {
+        if let Some(new_workspace) = Self::read_current_workspace() {
+            if new_workspace != self.current_workspace && new_workspace > 0 {
+                println!("[overlay] Switching to workspace {}", new_workspace);
+                self.current_workspace = new_workspace;
+                self.scroll_offset_y = 0.0;
+                self.last_text_update = Instant::now() - (self.text_update_interval * 2);
+                self.force_redraw(qh);
+            }
+        }
     }
 
     fn load_margins_from_log() -> Option<(i32, i32)> {
@@ -365,8 +391,8 @@ impl AppState {
         if now.duration_since(self.last_text_update) >= self.text_update_interval {
             self.last_text_update = now;
 
-            let new_text =
-                Self::load_text_from_log(&self.temp_file).unwrap_or_else(get_default_text);
+            let temp_file = format!(".tmp{}", self.current_workspace);
+            let new_text = Self::load_text_from_log(&temp_file).unwrap_or_else(get_default_text);
 
             if new_text != self.text {
                 self.text = new_text;
@@ -391,7 +417,12 @@ impl AppState {
                     self.width,
                 );
                 self.max_scroll_offset_y = (total_text_height as f32 - self.height as f32).max(0.0);
-                self.scroll_offset_y = self.scroll_offset_y.min(self.max_scroll_offset_y);
+
+                if CONFIG.app.auto_scroll {
+                    self.scroll_offset_y = self.max_scroll_offset_y;
+                } else {
+                    self.scroll_offset_y = self.scroll_offset_y.min(self.max_scroll_offset_y);
+                }
 
                 if let Some(layer_surface) = &self.layer_surface {
                     layer_surface.set_size(self.width, self.height);
@@ -453,6 +484,7 @@ impl AppState {
                 &self.syntax_set,
                 &self.theme,
                 self.scroll_offset_y,
+                self.current_workspace,
                 qh,
             ) {
                 self.current_buffer = Some(buffer.clone());
@@ -881,6 +913,7 @@ fn create_shm_buffer(
     syntax_set: &SyntaxSet,
     theme: &syntect::highlighting::Theme,
     scroll_offset_y: f32,
+    current_workspace: u32,
     qh: &QueueHandle<AppState>,
 ) -> Result<wayland_client::protocol::wl_buffer::WlBuffer, Box<dyn std::error::Error>> {
     use std::os::unix::io::AsFd;
@@ -903,6 +936,7 @@ fn create_shm_buffer(
         syntax_set,
         theme,
         scroll_offset_y,
+        current_workspace,
     );
 
     let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
@@ -921,6 +955,109 @@ fn create_shm_buffer(
     Ok(buffer)
 }
 
+fn draw_workspace_indicator(
+    buffer: &mut [u8],
+    width: u32,
+    height: u32,
+    font: &Font,
+    current_workspace: u32,
+) {
+    let chip_padding = 10.0;
+    let chip_horizontal_padding = 8.0;
+    let font_scale_factor = 0.8;
+    let chip_corner_radius = 6.0;
+
+    let chip_bg_color = (
+        CONFIG.colors.blue.saturating_sub(15),
+        CONFIG.colors.green.saturating_sub(15),
+        CONFIG.colors.red.saturating_sub(15),
+    );
+
+    let text_color = (220u8, 220u8, 230u8);
+
+    let ws_text = format!("{}", current_workspace);
+    let scale = Scale::uniform(CONFIG.font.size * font_scale_factor);
+    let v_metrics = font.v_metrics(scale);
+    let text_width = measure_text_width(font, &ws_text, scale);
+
+    let chip_width = text_width + (2.0 * chip_horizontal_padding);
+    let chip_height = v_metrics.ascent - v_metrics.descent + 10.0; // Add some vertical padding
+
+    let chip_x = chip_padding;
+    let chip_y = chip_padding;
+
+    for y_local in 0..chip_height as u32 {
+        for x_local in 0..chip_width as u32 {
+            let x_abs = chip_x as u32 + x_local;
+            let y_abs = chip_y as u32 + y_local;
+
+            if x_abs < width && y_abs < height {
+                let alpha = calculate_rounded_rect_alpha(
+                    x_local as f32,
+                    y_local as f32,
+                    chip_width,
+                    chip_height,
+                    chip_corner_radius,
+                );
+
+                if alpha > 0.0 {
+                    let pixel_idx = ((y_abs * width + x_abs) * 4) as usize;
+                    let bg_b = buffer[pixel_idx] as f32;
+                    let bg_g = buffer[pixel_idx + 1] as f32;
+                    let bg_r = buffer[pixel_idx + 2] as f32;
+
+                    buffer[pixel_idx] =
+                        (bg_b * (1.0 - alpha) + chip_bg_color.0 as f32 * alpha) as u8;
+                    buffer[pixel_idx + 1] =
+                        (bg_g * (1.0 - alpha) + chip_bg_color.1 as f32 * alpha) as u8;
+                    buffer[pixel_idx + 2] =
+                        (bg_r * (1.0 - alpha) + chip_bg_color.2 as f32 * alpha) as u8;
+                }
+            }
+        }
+    }
+
+    // --- Draw the Text ---
+    let text_baseline_y =
+        chip_y + (chip_height / 2.0) + (v_metrics.ascent + v_metrics.descent) / 2.0;
+    let text_x = chip_x + chip_horizontal_padding;
+
+    let glyphs = font.layout(&ws_text, scale, point(text_x, text_baseline_y));
+
+    for glyph in glyphs {
+        if let Some(bounding_box) = glyph.pixel_bounding_box() {
+            glyph.draw(|x, y, v| {
+                let pixel_x = x as i32 + bounding_box.min.x;
+                let pixel_y = y as i32 + bounding_box.min.y;
+
+                if pixel_x >= 0
+                    && pixel_x < width as i32
+                    && pixel_y >= 0
+                    && pixel_y < height as i32
+                    && v > 0.1
+                {
+                    let pixel_idx = ((pixel_y as u32 * width + pixel_x as u32) * 4) as usize;
+                    let text_alpha = (v * 255.0) as u8;
+                    if text_alpha > 50 {
+                        let alpha_f = text_alpha as f32 / 255.0;
+                        let inv_alpha = 1.0 - alpha_f;
+                        let bg_b = buffer[pixel_idx] as f32;
+                        let bg_g = buffer[pixel_idx + 1] as f32;
+                        let bg_r = buffer[pixel_idx + 2] as f32;
+
+                        buffer[pixel_idx] =
+                            (bg_b * inv_alpha + text_color.0 as f32 * alpha_f) as u8;
+                        buffer[pixel_idx + 1] =
+                            (bg_g * inv_alpha + text_color.1 as f32 * alpha_f) as u8;
+                        buffer[pixel_idx + 2] =
+                            (bg_r * inv_alpha + text_color.2 as f32 * alpha_f) as u8;
+                    }
+                }
+            });
+        }
+    }
+}
+
 fn draw_content_to_buffer(
     buffer: &mut [u8],
     width: u32,
@@ -931,6 +1068,7 @@ fn draw_content_to_buffer(
     syntax_set: &SyntaxSet,
     theme: &syntect::highlighting::Theme,
     scroll_offset_y: f32,
+    current_workspace: u32,
 ) {
     let data = unsafe { std::slice::from_raw_parts_mut(buffer.as_ptr() as *mut u8, buffer.len()) };
 
@@ -967,6 +1105,9 @@ fn draw_content_to_buffer(
         }
     }
 
+    // Draw workspace indicator on top of the background
+    draw_workspace_indicator(data, width, height, font, current_workspace);
+
     // Render markdown content
     render_text(
         data,
@@ -992,7 +1133,7 @@ fn render_text(
     scroll_offset_y: f32,
 ) {
     let blocks = parse_markdown(text);
-    let mut y_cursor = 30.0 - scroll_offset_y;
+    let mut y_cursor = 40.0 - scroll_offset_y; // Increased top margin to not overlap with the pill
 
     for block in blocks.iter() {
         if y_cursor > height as f32 {
@@ -1244,26 +1385,19 @@ fn wrap_line_with_syntax(
             continue;
         }
 
-        // Split the "clean_segment" into atomic tokens, preserving internal whitespace.
         let tokens = split_segment_into_tokens(clean_segment);
 
         for token in tokens {
             let token_pixel_width = measure_text_width(font, &token, scale);
 
-            // Attempt to add this token to the current wrapped line.
-            // If it exceeds max_width AND it's not the very first token on a new line,
-            // then we need to wrap.
             if current_line_pixel_width + token_pixel_width > max_width
                 && current_line_pixel_width > 0.0
             {
-                // If the token itself is wider than max_width, it should still go on a new line.
-                // This condition makes sure we break _before_ the token, if possible.
                 wrapped_lines.push(current_line_segments.clone());
                 current_line_segments.clear();
                 current_line_pixel_width = 0.0;
             }
 
-            // Add the token to the current line (which might be a new line after wrapping)
             current_line_segments.push((*style, token));
             current_line_pixel_width += token_pixel_width;
         }
@@ -1333,7 +1467,7 @@ fn calculate_text_height(
     width: u32,
 ) -> u32 {
     let blocks = parse_markdown(text);
-    let mut total_height = 30.0; // Initial top margin
+    let mut total_height = 40.0; // 
 
     for block in blocks.iter() {
         let (content, lang, is_code_block) = match block {
@@ -1492,10 +1626,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use a separate thread approach or polling with proper connection management
     let mut last_text_check = std::time::Instant::now();
     let text_check_interval = std::time::Duration::from_millis(10);
+    let mut last_workspace_check = std::time::Instant::now();
+    let workspace_check_interval = std::time::Duration::from_millis(250);
 
     loop {
         // Always check for text updates first, independent of Wayland events
         let now = std::time::Instant::now();
+
+        if now.duration_since(last_workspace_check) >= workspace_check_interval {
+            last_workspace_check = now;
+            state.check_for_workspace_switch(&qh);
+        }
+
         if now.duration_since(last_text_check) >= text_check_interval {
             last_text_check = now;
 

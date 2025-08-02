@@ -6,7 +6,7 @@ Aerogel brings intelligent assistance directly to your Wayland desktop through a
 
 ## ✨ Demo
 
-https://github.com/user-attachments/assets/0d890ee1-3782-4278-9160-51f6989b6aa9
+https://github.com/user-attachments/assets/7960f819-1476-4814-aa40-09018295b4ab
 
 ## 🚀 Quick Start
 
@@ -71,6 +71,7 @@ Customize your Aerogel experience by editing `aerogel.toml`. The configuration f
 - **Max Height**: Maximum interface height in pixels (default: 810)
 - **Scroll Speed**: Controls scrolling sensitivity (default: 0.4)
 - **Border Radius**: Interface corner rounding in pixels (default: 8.0)
+- **Auto Scroll**: Enable/disable automatic scrolling (default: false)
 
 ### Font Configuration
 - **Path**: Font file location (default: JetBrains Mono)
@@ -91,12 +92,13 @@ All keyboard shortcuts are configurable in the `[keybindings]` section:
 
 | Action | Default Shortcut | Config Key | Description |
 |--------|------------------|------------|-------------|
-| **Toggle Interface** | `Ctrl + \` | `show_hide` | Show or hide the overlay |
+| **Toggle Interface** | `Ctrl + X` | `show_hide` | Show or hide the overlay |
 | **Text Input** | `Ctrl + I` | `type_text` | Open text input for queries |
-| **Screenshot** | `Ctrl + H` | `take_screenshot` | Capture current screen |
+| **Screenshot** | `Ctrl + Q` | `take_screenshot` | Capture current screen |
 | **Audio Recording** | `Ctrl + M` | `record_audio` | Record voice input |
 | **Process Query** | `Ctrl + Enter` | `solve` | Send query to AI |
 | **Clear Session** | `Ctrl + G` | `clear` | Reset current conversation |
+| **Switch Workspace** | `Alt` | `switch_to_workspace` | Switch between workspaces |
 
 ## 🐛 Troubleshooting
 

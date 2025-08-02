@@ -24,6 +24,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aerogel"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "base64 0.22.1",
+ "byteorder",
+ "chrono",
+ "clap",
+ "colored",
+ "config",
+ "dirs",
+ "dotenv",
+ "futures-util",
+ "memmap2",
+ "mime_guess",
+ "nix",
+ "notify",
+ "once_cell",
+ "pulldown-cmark",
+ "rdev",
+ "reqwest",
+ "rusttype",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml 0.8.23",
+ "wayland-client",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
 name = "android-tzdata"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1421,41 +1456,6 @@ checksum = "49203cdcae0030493bad186b28da2fa25645fa276a51b6fec8010d281e02ef79"
 dependencies = [
  "dlv-list",
  "hashbrown 0.14.5",
-]
-
-[[package]]
-name = "overlay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "base64 0.22.1",
- "byteorder",
- "chrono",
- "clap",
- "colored",
- "config",
- "dirs",
- "dotenv",
- "futures-util",
- "memmap2",
- "mime_guess",
- "nix",
- "notify",
- "once_cell",
- "pulldown-cmark",
- "rdev",
- "reqwest",
- "rusttype",
- "serde",
- "serde_json",
- "syntect",
- "tempfile",
- "tokio",
- "tokio-stream",
- "toml 0.8.23",
- "wayland-client",
- "wayland-protocols-wlr",
 ]
 
 [[package]]

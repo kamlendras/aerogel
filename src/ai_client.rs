@@ -1,15 +1,18 @@
 use crate::config::ApiConfig;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_stream::stream;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use mime_guess;
-use reqwest::{multipart, Client};
-use serde_json::{json, Value};
+use reqwest::{Client, multipart};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::Path;
 use std::pin::Pin;
 use tokio::fs;
-use tokio_stream::{Stream, StreamExt};
+use tokio::sync::Mutex;
+use tokio_stream::Stream;
 
 #[derive(Debug, Clone)]
 pub struct Media {
@@ -21,6 +24,12 @@ pub struct Media {
 pub struct PromptData {
     pub text: String,
     pub media: Vec<Media>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message {
+    pub role: String,
+    pub content: Value,
 }
 
 impl PromptData {
@@ -51,6 +60,7 @@ impl PromptData {
 pub struct AiClient {
     client: Client,
     config: ApiConfig,
+    history: Mutex<HashMap<String, Vec<Message>>>,
 }
 
 const SUPPORTED_AUDIO_TYPES: &[&str] = &[
@@ -71,19 +81,46 @@ impl AiClient {
         Self {
             client: Client::new(),
             config,
+            history: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub async fn add_history_entry(
+        &self,
+        provider: &str,
+        user_content: Value,
+        assistant_response: String,
+    ) {
+        let mut history = self.history.lock().await;
+        let provider_history = history.entry(provider.to_string()).or_default();
+        provider_history.push(Message {
+            role: "user".to_string(),
+            content: user_content,
+        });
+        provider_history.push(Message {
+            role: "assistant".to_string(),
+            content: json!(assistant_response),
+        });
+    }
+
+    pub async fn clear_history(&self) {
+        let mut history = self.history.lock().await;
+        history.clear();
     }
 
     pub async fn chat_ollama(
         &self,
         prompt_data: &PromptData,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
-        let mut content_parts: Vec<Value> = Vec::new();
+    ) -> Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)> {
+        let history_guard = self.history.lock().await;
+        let past_messages = history_guard
+            .get("Ollama")
+            .map_or(&[][..], |v| v.as_slice());
 
-        content_parts.push(json!({
+        let mut content_parts: Vec<Value> = vec![json!({
             "type": "text",
             "text": prompt_data.text
-        }));
+        })];
 
         for media in &prompt_data.media {
             if media.mime_type.starts_with("image/") {
@@ -100,18 +137,29 @@ impl AiClient {
             }
         }
 
+        let user_content = json!(content_parts);
+
+        let mut messages: Vec<Value> = past_messages.iter().map(|m| json!(m)).collect();
+
+        messages.push(json!({
+            "role": "user",
+            "content": user_content.clone()
+        }));
+
         let payload = json!({
             "model": &self.config.ollama.model,
-            "messages": [{"role": "user", "content": content_parts}],
+            "messages": messages,
             "max_tokens": self.config.ollama.max_tokens,
             "temperature": self.config.ollama.temperature,
             "top_p": self.config.ollama.top_p,
             "stream": true
         });
 
+        let api_url = self.config.ollama.api_base.trim_end_matches('/');
+
         let response = self
             .client
-            .post(&self.config.ollama.api_base)
+            .post(api_url)
             .header("Content-Type", "application/json")
             .json(&payload)
             .send()
@@ -131,7 +179,9 @@ impl AiClient {
                 for line in s.split('\n') {
                     if line.starts_with("data: ") {
                         let data = &line[6..];
-                        if data == "[DONE]" { break; }
+                        if data == "[DONE]" {
+                            break;
+                        }
                         if let Ok(json) = serde_json::from_str::<Value>(data) {
                             if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                                 yield Ok(content.to_string());
@@ -141,22 +191,27 @@ impl AiClient {
                 }
             }
         };
-        Ok(Box::pin(s))
+
+        Ok((Box::pin(s), user_content))
     }
 
     pub async fn chat_openrouter(
         &self,
         prompt_data: &PromptData,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)> {
         let api_key = self
             .config
             .get_key("openrouter")
             .ok_or_else(|| anyhow!("OpenRouter API key not found"))?;
 
+        let history_guard = self.history.lock().await;
+        let past_messages = history_guard
+            .get("OpenRouter")
+            .map_or(&[][..], |v| v.as_slice());
+
         let mut content_parts: Vec<Value> = Vec::new();
         let mut ocr_text = String::new();
 
-        // Process images with Gemini OCR first
         for media in &prompt_data.media {
             if media.mime_type.starts_with("image/") {
                 match self
@@ -173,7 +228,6 @@ impl AiClient {
                             "[Warning]: Failed to extract text from image with Gemini: {}",
                             e
                         );
-                        // Optionally, still include the image in the request as fallback
                         let image_url = format!("data:{};base64,{}", media.mime_type, media.data);
                         content_parts.push(json!({
                             "type": "image_url",
@@ -183,27 +237,36 @@ impl AiClient {
                 }
             } else {
                 eprintln!(
-                "\n[Warning (OpenRouter Chat)]: Skipping media with unsupported MIME type '{}'.",
-                media.mime_type
-            );
+                    "\n[Warning (OpenRouter Chat)]: Skipping media with unsupported MIME type '{}'.",
+                    media.mime_type
+                );
             }
         }
 
-        // Combine original text with OCR results
         let combined_text = if ocr_text.is_empty() {
             prompt_data.text.clone()
         } else {
             format!("{}{}", prompt_data.text, ocr_text)
         };
 
-        content_parts.push(json!({
-            "type": "text",
-            "text": combined_text
+        content_parts.insert(
+            0,
+            json!({
+                "type": "text",
+                "text": combined_text
+            }),
+        );
+        let user_content = json!(content_parts);
+
+        let mut messages: Vec<Value> = past_messages.iter().map(|m| json!(m)).collect();
+        messages.push(json!({
+            "role": "user",
+            "content": user_content.clone()
         }));
 
         let payload = json!({
             "model": &self.config.openrouter.model,
-            "messages": [{"role": "user", "content": content_parts}],
+            "messages": messages,
             "max_tokens": self.config.openrouter.max_tokens,
             "temperature": self.config.openrouter.temperature,
             "top_p": self.config.openrouter.top_p,
@@ -243,15 +306,14 @@ impl AiClient {
                 }
             }
         };
-        Ok(Box::pin(s))
+        Ok((Box::pin(s), user_content))
     }
 
-    // Helper method to extract text using Gemini via OpenRouter
     async fn extract_text_with_gemini(&self, image_data: &str, mime_type: &str) -> Result<String> {
         let api_key = self
             .config
             .get_key("openrouter")
-            .ok_or_else(|| anyhow!("OpenRouter API key not found"))?;
+            .ok_or_else(|| anyhow!("OpenRouter API key not found for OCR"))?;
 
         let image_url = format!("data:{};base64,{}", mime_type, image_data);
 
@@ -311,8 +373,8 @@ impl AiClient {
 
         let extension = match media.mime_type.as_str() {
             "audio/flac" => "flac",
-            "audio/m4a" | "audio/x-m4a" | "audio/mp4" => "m4a", // Group common M4A types
-            "audio/mp3" | "audio/mpeg" | "audio/mpga" => "mp3", // Group common MPEG types
+            "audio/m4a" | "audio/x-m4a" | "audio/mp4" => "m4a",
+            "audio/mp3" | "audio/mpeg" | "audio/mpga" => "mp3",
             "audio/oga" | "audio/ogg" => "ogg",
             "audio/wav" | "audio/x-wav" => "wav",
             "audio/webm" => "webm",
@@ -368,14 +430,18 @@ impl AiClient {
     pub async fn chat_openai(
         &self,
         prompt_data: &PromptData,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)> {
         let api_key = self
             .config
             .get_key("openai")
             .ok_or_else(|| anyhow!("OpenAI API key not found"))?;
 
-        let mut transcribed_text = String::new();
+        let history_guard = self.history.lock().await;
+        let past_messages = history_guard
+            .get("OpenAI")
+            .map_or(&[][..], |v| v.as_slice());
 
+        let mut transcribed_text = String::new();
         for media in &prompt_data.media {
             if SUPPORTED_AUDIO_TYPES.contains(&media.mime_type.as_str()) {
                 print!("\n[OpenAI] Transcribing supported audio... ");
@@ -384,7 +450,7 @@ impl AiClient {
                     Ok(transcript) => {
                         println!("Done.");
                         transcribed_text.push_str(&transcript);
-                        transcribed_text.push_str("\n\n"); //
+                        transcribed_text.push_str("\n\n");
                     }
                     Err(e) => {
                         eprintln!("\n[OpenAI] Transcription failed: {}", e);
@@ -396,12 +462,10 @@ impl AiClient {
         }
 
         let final_text = format!("{}{}", transcribed_text, prompt_data.text);
-        let mut content_parts: Vec<Value> = Vec::new();
-
-        content_parts.push(json!({
+        let mut content_parts: Vec<Value> = vec![json!({
             "type": "text",
             "text": final_text
-        }));
+        })];
 
         for media in &prompt_data.media {
             if media.mime_type.starts_with("image/") {
@@ -417,10 +481,17 @@ impl AiClient {
                 );
             }
         }
+        let user_content = json!(content_parts);
+
+        let mut messages: Vec<Value> = past_messages.iter().map(|m| json!(m)).collect();
+        messages.push(json!({
+            "role": "user",
+            "content": user_content.clone()
+        }));
 
         let payload = json!({
             "model": &self.config.openai.model,
-            "messages": [{"role": "user", "content": content_parts}],
+            "messages": messages,
             "max_tokens": self.config.openai.max_tokens,
             "temperature": self.config.openai.temperature,
             "top_p": self.config.openai.top_p,
@@ -460,30 +531,58 @@ impl AiClient {
                 }
             }
         };
-        Ok(Box::pin(s))
+        Ok((Box::pin(s), user_content))
     }
 
     pub async fn chat_gemini(
         &self,
         prompt_data: &PromptData,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)> {
         let api_key = self
             .config
             .get_key("gemini")
             .ok_or_else(|| anyhow!("Gemini API key not found"))?;
 
-        let mut parts: Vec<Value> = vec![json!({ "text": &prompt_data.text })];
+        let history_guard = self.history.lock().await;
+        let gemini_history = history_guard
+            .get("Gemini")
+            .map_or(&[][..], |v| v.as_slice());
+
+        let mut contents: Vec<Value> = gemini_history
+            .iter()
+            .map(|msg| {
+                let role = if msg.role == "assistant" {
+                    "model"
+                } else {
+                    "user"
+                };
+                let parts = if msg.content.is_array() {
+                    msg.content.clone()
+                } else {
+                    json!([{"text": msg.content}])
+                };
+                json!({ "role": role, "parts": parts })
+            })
+            .collect();
+
+        let mut new_user_parts: Vec<Value> = vec![json!({ "text": &prompt_data.text })];
         for media in &prompt_data.media {
-            parts.push(json!({
+            new_user_parts.push(json!({
                 "inline_data": {
                     "mime_type": &media.mime_type,
                     "data": &media.data
                 }
             }));
         }
+        let user_content = json!(new_user_parts);
+
+        contents.push(json!({
+            "role": "user",
+            "parts": user_content.clone()
+        }));
 
         let payload = json!({
-            "contents": [{"parts": parts}],
+            "contents": contents,
             "generationConfig": {
                 "maxOutputTokens": self.config.gemini.max_tokens,
                 "temperature": self.config.gemini.temperature,
@@ -491,13 +590,11 @@ impl AiClient {
             }
         });
 
-        // Construct the streaming URL from the base URL in the config
         let base_url = self
             .config
             .gemini
             .api_base
             .replace("{model}", &self.config.gemini.model);
-
         let url = format!("{}:streamGenerateContent?key={}&alt=sse", base_url, api_key);
 
         let response = self.client.post(&url).json(&payload).send().await?;
@@ -513,7 +610,6 @@ impl AiClient {
             for await chunk_result in stream {
                 let chunk = chunk_result.map_err(|e| anyhow!("Stream error from Gemini: {}", e))?;
                 let s = String::from_utf8_lossy(&chunk);
-
                 for line in s.lines() {
                     if line.starts_with("data: ") {
                         let data = &line[6..];
@@ -526,16 +622,22 @@ impl AiClient {
                 }
             }
         };
-        Ok(Box::pin(s))
+        Ok((Box::pin(s), user_content))
     }
+
     pub async fn chat_claude(
         &self,
         prompt_data: &PromptData,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)> {
         let api_key = self
             .config
             .get_key("claude")
             .ok_or_else(|| anyhow!("Claude API key not found"))?;
+
+        let history_guard = self.history.lock().await;
+        let past_messages = history_guard
+            .get("Claude")
+            .map_or(&[][..], |v| v.as_slice());
 
         let mut content_parts: Vec<Value> = vec![json!({
             "type": "text",
@@ -559,11 +661,18 @@ impl AiClient {
                 );
             }
         }
+        let user_content = json!(content_parts);
+
+        let mut messages: Vec<Value> = past_messages.iter().map(|m| json!(m)).collect();
+        messages.push(json!({
+            "role": "user",
+            "content": user_content.clone()
+        }));
 
         let payload = json!({
             "model": &self.config.claude.model,
             "max_tokens": self.config.claude.max_tokens,
-            "messages": [{"role": "user", "content": content_parts}],
+            "messages": messages,
             "temperature": self.config.claude.temperature,
             "top_p": self.config.claude.top_p,
             "stream": true
@@ -604,24 +713,36 @@ impl AiClient {
                 }
             }
         };
-        Ok(Box::pin(s))
+        Ok((Box::pin(s), user_content))
     }
 
     pub async fn chat_xai(
         &self,
         prompt_data: &PromptData,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<(Pin<Box<dyn Stream<Item = Result<String>> + Send>>, Value)> {
         let api_key = self
             .config
             .get_key("xai")
             .ok_or_else(|| anyhow!("XAI API key not found"))?;
 
         if !prompt_data.media.is_empty() {
-            eprintln!("\n[Warning (XAI/Grok)]: This model does not support media inputs. Ignoring all attached files.");
+            eprintln!(
+                "\n[Warning (XAI/Grok)]: This model does not support media inputs. Ignoring all attached files."
+            );
         }
 
+        let history_guard = self.history.lock().await;
+        let past_messages = history_guard.get("XAI").map_or(&[][..], |v| v.as_slice());
+
+        let user_content = json!(prompt_data.text);
+        let mut messages: Vec<Value> = past_messages.iter().map(|m| json!(m)).collect();
+        messages.push(json!({
+            "role": "user",
+            "content": user_content.clone()
+        }));
+
         let payload = json!({
-            "messages": [{"role": "user", "content": &prompt_data.text}],
+            "messages": messages,
             "model": &self.config.xai.model,
             "max_tokens": self.config.xai.max_tokens,
             "temperature": self.config.xai.temperature,
@@ -662,6 +783,6 @@ impl AiClient {
                 }
             }
         };
-        Ok(Box::pin(s))
+        Ok((Box::pin(s), user_content))
     }
 }

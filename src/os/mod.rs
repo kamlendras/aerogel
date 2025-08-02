@@ -34,7 +34,7 @@ fn set_modifier(
         ("-", "_"),
     ]);
 
-    let mut res = key_char.clone().to_string();
+    let mut res = key_char.to_string();
     if shift && shift_mapping.contains_key(&key_char) {
         res = shift_mapping[&key_char].to_string();
     } else if shift || capslock {
@@ -58,14 +58,6 @@ pub(crate) fn start_eventlistener(log_file: String, timeout: u64) -> Result<()> 
     {
         let keyboard_device_path = nix::nix_find_keyboard_device();
         let _res = nix::nix_log_keys(keyboard_device_path.unwrap(), log_file, timeout);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _res = mac::mac_log_keys(log_file, timeout);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _res = win::mac_log_keys(log_file, timeout);
     }
     Ok(())
 }
