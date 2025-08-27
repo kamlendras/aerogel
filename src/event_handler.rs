@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 const LOG_FILE_TO_WATCH: &str = ".event";
 const AI_EXECUTABLE: &str = "./ai_manager";
 const SCREENSHOT_DIR: &str = "screenshots";
+const AUDIO_DIR: &str = "audio_recordings";
 const WORKSPACE_STATE_FILE: &str = ".aerogel_workspace";
 
 #[derive(Debug, Deserialize, Clone)]
@@ -265,6 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     tokio::fs::create_dir_all(SCREENSHOT_DIR).await?;
+    tokio::fs::create_dir_all(AUDIO_DIR).await?;
 
     let mut current_workspace: u32 = 1;
     let mut ai_process_senders = HashMap::<u32, mpsc::Sender<String>>::new();
@@ -320,6 +322,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut log_snapshot_before_recording = String::new();
     let mut active_modifiers = Vec::<String>::new();
 
+    // Audio recording state
+    let mut audio_recording_process: Option<tokio::process::Child> = None;
+    let mut current_audio_file: Option<String> = None;
+
     // State for workspace switching
     let mut waiting_for_workspace_number = false;
 
@@ -337,12 +343,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .get(&current_workspace)
                 .expect("BUG: No sender for current workspace");
 
-            
             if waiting_for_workspace_number {
                 let is_digit = trimmed_line.len() == 1
                     && trimmed_line.chars().next().unwrap().is_ascii_digit();
 
-              
                 waiting_for_workspace_number = false;
 
                 if is_digit {
@@ -355,11 +359,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     active_modifiers.clear();
                     continue;
                 } else {
-               
                     println!("\n>>> Workspace switch cancelled (non-digit pressed).");
                 }
             }
-          
 
             let is_modifier = matches!(
                 trimmed_line,
@@ -367,22 +369,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
 
             if is_modifier {
-             
                 let canonical_modifier = get_canonical_modifier(trimmed_line);
                 let modifier_str = trimmed_line.to_string();
 
-                
                 if !active_modifiers.contains(&modifier_str) {
                     active_modifiers.push(modifier_str);
                 }
 
-               
                 if !canonical_modifier.is_empty()
                     && canonical_modifier.eq_ignore_ascii_case(&keybindings.switch_to_workspace)
                 {
                     waiting_for_workspace_number = true;
                 }
-              
             } else {
                 if !active_modifiers.is_empty() {
                     let mut combo_parts: Vec<&str> = active_modifiers
@@ -395,8 +393,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let final_key = match trimmed_line {
                         "[Enter]" => "Enter",
-                      "[Space]" => "Space", 
-                        key => key.trim_start_matches("shift+"), 
+                        "[Space]" => "Space",
+                        key => key.trim_start_matches("shift+"),
                     };
 
                     let mut combo_string_parts = combo_parts;
@@ -432,6 +430,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         if overlay_was_running {
                             start_overlay().await;
+                        }
+                    } else if combo_string.eq_ignore_ascii_case(&keybindings.record_audio) {
+                        if audio_recording_process.is_none() {
+                            // Start audio recording
+                            println!(
+                                "\n>>> Trigger: Started Audio Recording ({}) on ws {}",
+                                &combo_string, current_workspace
+                            );
+
+                            let timestamp = Local::now().format("%Y%m%d-%H%M%S");
+                            let filename =
+                                format!("audio-ws{}-{}.opus", current_workspace, timestamp);
+                            let audio_path = Path::new(AUDIO_DIR).join(&filename);
+
+                            match start_audio_recording(&audio_path).await {
+                                Ok(child) => {
+                                    audio_recording_process = Some(child);
+                                    current_audio_file =
+                                        Some(audio_path.to_string_lossy().to_string());
+                                    println!(
+                                        "Audio recording started, saving to '{}'",
+                                        audio_path.display()
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to start audio recording: {}", e);
+                                }
+                            }
+                        } else {
+                            // Stop audio recording
+                            println!(
+                                "\n>>> Trigger: Stopped Audio Recording ({}) on ws {}",
+                                &combo_string, current_workspace
+                            );
+
+                            if let Some(mut child) = audio_recording_process.take() {
+                                if let Err(e) = stop_audio_recording(&mut child).await {
+                                    eprintln!("Error stopping audio recording: {}", e);
+                                } else {
+                                    println!(
+                                        "Audio recording stopped. Press '{}' to process.",
+                                        raw_keybindings.solve
+                                    );
+                                }
+                            }
                         }
                     } else if combo_string.eq_ignore_ascii_case(&keybindings.type_text) {
                         if !in_recording_mode {
@@ -471,6 +514,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             key_buffer.clear();
                             log_snapshot_before_recording.clear();
                         }
+                        // Stop any ongoing audio recording
+                        if let Some(mut child) = audio_recording_process.take() {
+                            let _ = stop_audio_recording(&mut child).await;
+                            current_audio_file = None;
+                            println!("Stopped ongoing audio recording due to clear command");
+                        }
                         if let Err(e) = ai_tx.send("/restart".to_string()).await {
                             eprintln!("Error sending restart command to AI manager: {}", e);
                         }
@@ -504,6 +553,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             log_snapshot_before_recording.clear();
+                        } else if current_audio_file.is_some() {
+                            // Process audio recording
+                            println!(
+                                "\n>>> Trigger: Process Audio Recording ({}) on ws {}",
+                                &combo_string, current_workspace
+                            );
+
+                            // Stop recording if still active
+                            if let Some(mut child) = audio_recording_process.take() {
+                                if let Err(e) = stop_audio_recording(&mut child).await {
+                                    eprintln!("Error stopping audio recording: {}", e);
+                                }
+                            }
+
+                            if let Some(audio_file) = current_audio_file.take() {
+                                let upload_command = format!("/upload {}", audio_file);
+                                if let Err(e) = ai_tx.send(upload_command).await {
+                                    eprintln!(
+                                        "Error sending audio upload command to AI manager: {}",
+                                        e
+                                    );
+                                }
+
+                                if let Err(e) = ai_tx.send("/ask".to_string()).await {
+                                    eprintln!("Error sending '/ask' command to AI manager: {}", e);
+                                }
+                            }
                         } else {
                             println!(
                                 "\n>>> Trigger: Standalone AI Ask ({}) on ws {}",
@@ -523,7 +599,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else if in_recording_mode {
                     let mut needs_update = true;
                     match trimmed_line {
-                         "[Space]" => key_buffer.push(' '),
+                        "[Space]" => key_buffer.push(' '),
                         "[Backspace]" => {
                             key_buffer.pop();
                         }
@@ -626,6 +702,75 @@ async fn take_screenshot(path: &Path) -> io::Result<()> {
     }
 }
 
+async fn detect_audio_backend() -> (&'static str, &'static str) {
+    let pulse_check = Command::new("pgrep")
+        .arg("-x")
+        .arg("pulseaudio")
+        .output()
+        .await;
+
+    match pulse_check {
+        Ok(output) if output.status.success() => {
+            println!("[Audio] PulseAudio detected. Using 'pulse' backend.");
+            ("pulse", "default")
+        }
+        _ => {
+            println!("[Audio] PulseAudio not detected. Falling back to 'alsa' backend.");
+            ("alsa", "hw:0")
+        }
+    }
+}
+
+async fn start_audio_recording(path: &Path) -> io::Result<tokio::process::Child> {
+    let (audio_backend, audio_device) = detect_audio_backend().await;
+
+    let child = Command::new("ffmpeg")
+        .arg("-f")
+        .arg(audio_backend)
+        .arg("-i")
+        .arg(audio_device)
+        .arg("-c:a")
+        .arg("libopus")
+        .arg("-b:a")
+        .arg("64k")
+        .arg("-y")
+        .arg(path.as_os_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    Ok(child)
+}
+
+async fn stop_audio_recording(child: &mut tokio::process::Child) -> io::Result<()> {
+    // Send SIGTERM to allow ffmpeg to gracefully finalize the file.
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+
+    // Wait for the process to finish.
+    match child.wait().await {
+        Ok(status) => {
+            if status.success() || status.code() == Some(143) {
+                println!("[Audio] Recording process terminated successfully.");
+            } else {
+                eprintln!(
+                    "[Audio] Recording process exited with unexpected status: {:?}",
+                    status
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("[Audio] Error waiting for recording process to exit: {}", e);
+            Err(e)
+        }
+    }
+}
+
 async fn read_new_content(path: &str, last_pos: &mut u64) -> io::Result<String> {
     let mut file = File::open(path).await?;
     let current_len = file.metadata().await?.len();
@@ -635,15 +780,24 @@ async fn read_new_content(path: &str, last_pos: &mut u64) -> io::Result<String> 
     if current_len < *last_pos {
         *last_pos = 0;
     }
+
     file.seek(io::SeekFrom::Start(*last_pos)).await?;
     let mut buffer = String::new();
     file.read_to_string(&mut buffer).await?;
     *last_pos = current_len;
+
     Ok(buffer)
 }
 
 async fn overwrite_text_log(content: &str, path: &str) -> io::Result<()> {
-    tokio::fs::write(path, content.as_bytes()).await
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(path)
+        .await?;
+    file.write_all(content.as_bytes()).await?;
+    file.flush().await
 }
 
 async fn clear_text_log(path: &str) -> io::Result<()> {

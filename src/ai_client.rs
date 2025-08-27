@@ -534,6 +534,66 @@ impl AiClient {
         Ok((Box::pin(s), user_content))
     }
 
+    async fn transcribe_audio_gemini(&self, media: &Media) -> Result<String> {
+        let api_key = self
+            .config
+            .get_key("gemini")
+            .ok_or_else(|| anyhow!("Gemini API key not found for audio transcription"))?;
+
+        let contents = vec![json!({
+            "role": "user",
+            "parts": [
+                {
+                    "text": "Please transcribe this audio file. Return only the transcribed text without any additional commentary."
+                },
+                {
+                    "inline_data": {
+                        "mime_type": &media.mime_type,
+                        "data": &media.data
+                    }
+                }
+            ]
+        })];
+
+        let payload = json!({
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": 6000,
+                "temperature": 0.1,
+            }
+        });
+
+        let base_url = self
+            .config
+            .gemini
+            .api_base
+            .replace("{model}", &self.config.gemini.model);
+        let url = format!("{}:generateContent?key={}", base_url, api_key);
+
+        let response = self.client.post(&url).json(&payload).send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response.text().await?;
+            return Err(anyhow!(
+                "Gemini Audio Transcription Error ({}): {}",
+                status,
+                error_body
+            ));
+        }
+
+        let response_json: Value = response.json().await?;
+
+        if let Some(text) = response_json
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str)
+        {
+            Ok(text.to_string())
+        } else {
+            Err(anyhow!("No text transcribed from audio by Gemini"))
+        }
+    }
+
     pub async fn chat_gemini(
         &self,
         prompt_data: &PromptData,
@@ -565,14 +625,39 @@ impl AiClient {
             })
             .collect();
 
-        let mut new_user_parts: Vec<Value> = vec![json!({ "text": &prompt_data.text })];
+        let mut transcribed_text = String::new();
         for media in &prompt_data.media {
-            new_user_parts.push(json!({
-                "inline_data": {
-                    "mime_type": &media.mime_type,
-                    "data": &media.data
+            if SUPPORTED_AUDIO_TYPES.contains(&media.mime_type.as_str()) {
+                print!("\n[Gemini] Transcribing supported audio... ");
+                io::stdout().flush()?;
+                match self.transcribe_audio_gemini(media).await {
+                    Ok(transcript) => {
+                        println!("Done.");
+                        transcribed_text.push_str(&transcript);
+                        transcribed_text.push_str("\n\n");
+                    }
+                    Err(e) => {
+                        eprintln!("\n[Gemini] Transcription failed: {}", e);
+                        transcribed_text
+                            .push_str(&format!("[Audio Transcription Failed: {}]\n\n", e));
+                    }
                 }
-            }));
+            }
+        }
+
+        let final_text = format!("{}{}", transcribed_text, prompt_data.text);
+
+        let mut new_user_parts: Vec<Value> = vec![json!({ "text": &final_text })];
+
+        for media in &prompt_data.media {
+            if !media.mime_type.starts_with("audio/") {
+                new_user_parts.push(json!({
+                    "inline_data": {
+                        "mime_type": &media.mime_type,
+                        "data": &media.data
+                    }
+                }));
+            }
         }
         let user_content = json!(new_user_parts);
 

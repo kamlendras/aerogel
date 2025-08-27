@@ -53,4 +53,5 @@ dirs = "5.0"
 dotenv = "0.15"
 tempfile = "3.8"
 memmap2 = "0.9"
+libc = "0.2.175"
 
